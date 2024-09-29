@@ -99,7 +99,7 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
 }
 
 // Function to write staking rewards to an Excel file
-function writeToExcel(rewards, tokenPrice, network) {
+function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
     const decimals = network === 'polkadot' ? 10 : 12;
 
     const worksheetData = rewards.map((reward) => ({
@@ -127,8 +127,8 @@ function writeToExcel(rewards, tokenPrice, network) {
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, 'Rewards');
 
-    xlsx.writeFile(workbook, 'staking_rewards.xlsx');
-    console.log('Excel file created: staking_rewards.xlsx');
+    xlsx.writeFile(workbook, `${year}-${quarter}-${network}-${address}.xlsx`);
+    console.log(`Excel file created: ${year}-${quarter}-${network}-${address}.excel`);
 }
 
 // Function to fetch token price from CoinGecko API
@@ -216,7 +216,7 @@ program
             return;
         }
 
-        writeToExcel(rewards, price, network);
+        writeToExcel(rewards, price, network, address, quarter, year);
     } catch (error) {
         console.error('Error fetching staking rewards:', error.response?.data || error.message);
     }
