@@ -1,11 +1,13 @@
 const axios = require('axios');
-const { Command } = require('commander');
 const xlsx = require('xlsx');
-const fs = require('fs');
-const program = new Command();
+const { Command } = require('commander');
+const { input, select } = require('@inquirer/prompts');
 
-// Subscan API endpoint
-const SUBSCAN_API_URL = 'https://polkadot.api.subscan.io/api/v2/scan/account/reward_slash';
+// Subscan API URLs
+const SUBSCAN_API_URLS = {
+    polkadot: 'https://polkadot.api.subscan.io/api/v2/scan/account/reward_slash',
+    kusama: 'https://kusama.api.subscan.io/api/v2/scan/account/reward_slash',
+};
 
 // Function to map quarter to months
 const quarterToMonths = (year, quarter) => {
@@ -23,51 +25,73 @@ const quarterToMonths = (year, quarter) => {
     }
 };
 
-// Function to fetch staking rewards from Subscan API with pagination
-async function fetchStakingRewards(address, startDate, endDate) {
+// Helper function to introduce a delay
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Function to fetch staking rewards from Subscan API with pagination and delays
+async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
     let rewards = [];
     let page = 0;
     const startTimestamp = new Date(startDate).getTime() / 1000; // Convert to Unix timestamp
     const endTimestamp = new Date(endDate).getTime() / 1000;
-    let hasMoreData = true;  // Flag to indicate if more data should be fetched
+    let hasMoreData = true;
+    let retryCount = 0;
 
     while (hasMoreData) {
-        const response = await axios.post(
-            SUBSCAN_API_URL,
-            {
-                address: address,
-                category: 'Reward',
-                page: page,
-                row: 100,
-                timeout: 0
-            },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    //'X-API-Key': 'your-subscan-api-key-here' // Add your Subscan API key
+        try {
+            console.log(`Fetching rewards from page ${page + 1}...`);
+
+            const response = await axios.post(
+                apiUrl,
+                {
+                    address: address,
+                    category: 'Reward',
+                    page: page,
+                    row: 100,
+                    timeout: 0
+                },
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        //'X-API-Key': 'your-subscan-api-key-here' // Add your Subscan API key
+                    }
                 }
+            );
+
+            const rewardList = response.data.data.list || [];
+
+            if (rewardList.length === 0) {
+                console.log('No more rewards found.');
+                break;
             }
-        );
 
-        const rewardList = response.data.data.list || [];
-        
-        if (rewardList.length === 0) {
-            break; // No more data, exit loop
-        }
+            const filteredRewards = rewardList.filter(
+                reward => reward.block_timestamp >= startTimestamp && reward.block_timestamp <= endTimestamp
+            );
 
-        // Filter rewards by timestamp
-        const filteredRewards = rewardList.filter(
-            reward => reward.block_timestamp >= startTimestamp && reward.block_timestamp <= endTimestamp
-        );
+            rewards = rewards.concat(filteredRewards);
 
-        rewards = rewards.concat(filteredRewards);
+            const lastReward = rewardList[rewardList.length - 1];
+            if (lastReward.block_timestamp < startTimestamp || lastReward.block_timestamp > endTimestamp) {
+                hasMoreData = false; // Stop if the last reward is beyond the desired date range
+            } else {
+                page++; // Fetch the next page
+            }
 
-        // If the last reward in the current batch is within the date range, request the next page
-        const lastReward = rewardList[rewardList.length - 1];
-        if (lastReward.block_timestamp > endTimestamp) {
-            hasMoreData = false; // Stop if the last reward is beyond the desired date range
-        } else {
-            page++; // Fetch the next page
+            // Delay between requests (1 second)
+            await delay(1000);
+            retryCount = 0; // Reset retry count on successful request
+        } catch (error) {
+            if (error.response?.data?.code === 20008) {
+                // Handle rate limit exceeded
+                retryCount++;
+                const waitTime = 2 ** retryCount * 1000; // Exponential backoff
+                console.log(`API rate limit exceeded. Retrying in ${waitTime / 1000} seconds...`);
+                await delay(waitTime);
+            } else {
+                console.error('Error fetching staking rewards:', error.response?.data || error.message);
+                throw error; // Exit loop on non-rate limit errors
+            }
         }
     }
 
@@ -75,7 +99,9 @@ async function fetchStakingRewards(address, startDate, endDate) {
 }
 
 // Function to write staking rewards to an Excel file
-function writeToExcel(rewards, tokenPrice) {
+function writeToExcel(rewards, tokenPrice, network) {
+    const decimals = network === 'polkadot' ? 10 : 12;
+
     const worksheetData = rewards.map((reward) => ({
         Date: new Date(reward.block_timestamp * 1000).toLocaleDateString(),
         Era: reward.era,
@@ -83,17 +109,16 @@ function writeToExcel(rewards, tokenPrice) {
         Event_index: reward.event_index,
         Event_id: reward.event_index,
         Extrinsic_index: reward.extrinsic_index,
-        Amount: reward.amount / Math.pow(10, 10), 
-        EUR_Value: (reward.amount / Math.pow(10, 10)) * tokenPrice
+        Amount: reward.amount / Math.pow(10, decimals),
+        EUR_Value: (reward.amount / Math.pow(10, decimals)) * tokenPrice
     }));
 
-    // Calculate the total rewards and EUR value
     const totalRewards = worksheetData.reduce((acc, row) => acc + row.Amount, 0);
     const totalEurValue = totalRewards * tokenPrice;
 
     worksheetData.push({
         Date: 'Total',
-        Extrinsic_index: `€ ${tokenPrice} per DOT`,
+        Extrinsic_index: `€ ${tokenPrice} per token`,
         Amount: totalRewards,
         EUR_Value: totalEurValue
     });
@@ -106,29 +131,92 @@ function writeToExcel(rewards, tokenPrice) {
     console.log('Excel file created: staking_rewards.xlsx');
 }
 
+// Function to fetch token price from CoinGecko API
+async function fetchTokenPrice(network) {
+    const tokenId = network === 'polkadot' ? 'polkadot' : 'kusama';
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=eur`;
+
+    try {
+        const response = await axios.get(url);
+        return response.data[tokenId].eur;
+    } catch (error) {
+        console.error('Error fetching token price from CoinGecko:', error.message);
+        throw error;
+    }
+}
+
 // CLI setup
+const program = new Command();
 program
-    .requiredOption('-y, --year <year>', 'Year of the rewards')
-    .requiredOption('-q, --quarter <quarter>', 'Quarter (Q1, Q2, Q3, Q4)')
-    .requiredOption('-a, --address <address>', 'Polkadot wallet address')
-    .requiredOption('-p, --price <price>', 'Token price in EUR')
+    .option('-n, --network <network>', 'Network (polkadot or kusama)')
+    .option('-y, --year <year>', 'Year of the rewards')
+    .option('-q, --quarter <quarter>', 'Quarter (Q1, Q2, Q3, Q4)')
+    .option('-a, --address <address>', 'Wallet address')
+    .option('-p, --price <price>', 'Token price in EUR')
     .parse(process.argv);
 
 (async () => {
-    const { year, quarter, address, price } = program.opts();
-    const [startDate, endDate] = quarterToMonths(year, quarter);
-    const tokenPrice = parseFloat(price);
+    const options = program.opts();
 
-    console.log(`Fetching staking rewards for ${address} from ${startDate} to ${endDate}...`);
+    const network = options.network || await select({
+        message: 'Select the network',
+        choices: [
+            { name: 'Polkadot', value: 'polkadot' },
+            { name: 'Kusama', value: 'kusama' }
+        ]
+    });
+
+    const year = options.year || await input({
+        message: 'Enter the year',
+        validate: input => /^\d{4}$/.test(input) || 'Please enter a valid year'
+    });
+
+    const quarter = options.quarter || await select({
+        message: 'Select the quarter',
+        choices: [
+            { name: 'Q1', value: 'Q1' },
+            { name: 'Q2', value: 'Q2' },
+            { name: 'Q3', value: 'Q3' },
+            { name: 'Q4', value: 'Q4' }
+        ]
+    });
+
+    const address = options.address || await input({
+        message: 'Enter the wallet address',
+        validate: input => !!input || 'Please enter a valid wallet address'
+    });
+
+    let price = options.price || await input({
+        message: 'Enter the token price in EUR (leave empty to fetch from CoinGecko)',
+        validate: input => !input || !isNaN(parseFloat(input)) || 'Please enter a valid number'
+    });
+
+    const [startDate, endDate] = quarterToMonths(year, quarter);
+
+    if (!price) {
+        console.log(`Fetching token price for ${network} from CoinGecko...`);
+        try {
+            price = await fetchTokenPrice(network);
+            console.log(`Token price for ${network}: €${price}`);
+        } catch (error) {
+            console.error('Unable to fetch token price.');
+            process.exit(1);
+        }
+    } else {
+        price = parseFloat(price);
+    }
+
+    console.log(`Fetching staking rewards for ${address} on ${network} from ${startDate} to ${endDate}...`);
 
     try {
-        const rewards = await fetchStakingRewards(address, startDate, endDate);
+        const apiUrl = SUBSCAN_API_URLS[network];
+        const rewards = await fetchStakingRewards(address, startDate, endDate, apiUrl);
         if (rewards.length === 0) {
             console.log('No rewards found for the given period.');
             return;
         }
 
-        writeToExcel(rewards, tokenPrice);
+        writeToExcel(rewards, price, network);
     } catch (error) {
         console.error('Error fetching staking rewards:', error.response?.data || error.message);
     }
