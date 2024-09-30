@@ -71,8 +71,8 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
 
             rewards = rewards.concat(filteredRewards);
 
-            const lastReward = rewardList[rewardList.length - 1];
-            if (lastReward.block_timestamp < startTimestamp || lastReward.block_timestamp > endTimestamp) {
+	    const oldestReward = rewardList[rewardList.length - 1];
+            if (oldestReward.block_timestamp < startTimestamp) {
                 hasMoreData = false; // Stop if the last reward is beyond the desired date range
             } else {
                 page++; // Fetch the next page
