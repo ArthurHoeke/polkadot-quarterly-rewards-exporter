@@ -13,13 +13,13 @@ const SUBSCAN_API_URLS = {
 const quarterToMonths = (year, quarter) => {
     switch (quarter) {
         case 'Q1':
-            return [`${year}-01-01`, `${year}-03-31`];
+            return [`${year}-01-01T00:00:00Z`, `${year}-03-31T23:59:59Z`];
         case 'Q2':
-            return [`${year}-04-01`, `${year}-06-30`];
+            return [`${year}-04-01T00:00:00Z`, `${year}-06-30T23:59:59Z`];
         case 'Q3':
-            return [`${year}-07-01`, `${year}-09-30`];
+            return [`${year}-07-01T00:00:00Z`, `${year}-09-30T23:59:59Z`];
         case 'Q4':
-            return [`${year}-10-01`, `${year}-12-31`];
+            return [`${year}-10-01T00:00:00Z`, `${year}-12-31T23:59:59Z`];
         default:
             throw new Error('Invalid quarter');
     }
