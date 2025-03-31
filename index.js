@@ -1,7 +1,8 @@
 const axios = require('axios');
-const xlsx = require('xlsx');
+const XLSX = require('xlsx');
 const { Command } = require('commander');
 const { input, select } = require('@inquirer/prompts');
+const { exec } = require('child_process');
 
 // Subscan API URLs
 const SUBSCAN_API_URLS = {
@@ -71,7 +72,7 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
 
             rewards = rewards.concat(filteredRewards);
 
-	    const oldestReward = rewardList[rewardList.length - 1];
+            const oldestReward = rewardList[rewardList.length - 1];
             if (oldestReward.block_timestamp < startTimestamp) {
                 hasMoreData = false; // Stop if the last reward is beyond the desired date range
             } else {
@@ -123,12 +124,23 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
         EUR_Value: totalEurValue
     });
 
-    const worksheet = xlsx.utils.json_to_sheet(worksheetData);
-    const workbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(workbook, worksheet, 'Rewards');
+    const worksheet = XLSX.utils.json_to_sheet(worksheetData);
 
-    xlsx.writeFile(workbook, `${year}-${quarter}-${network}-${address}.xlsx`);
-    console.log(`Excel file created: ${year}-${quarter}-${network}-${address}.excel`);
+    // Auto-fit column widths
+    const columnWidths = Object.keys(worksheetData[0]).map((key) => {
+        const maxLength = Math.max(...worksheetData.map(row => String(row[key] || '').length), key.length);
+        return { wch: maxLength + 2 };
+    });
+    worksheet['!cols'] = columnWidths;
+
+    // Set landscape orientation (LibreOffice/Excel will respect this)
+    worksheet['!pageSetup'] = { orientation: 'landscape' };
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Rewards');
+
+    XLSX.writeFile(workbook, `${year}-${quarter}-${network}-${address}.xlsx`);
+    console.log(`Excel file created: ${year}-${quarter}-${network}-${address}.xlsx`);
 }
 
 // Function to fetch token price from CoinGecko API
