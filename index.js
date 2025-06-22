@@ -4,6 +4,9 @@ const { Command } = require('commander');
 const { input, select } = require('@inquirer/prompts');
 const { exec } = require('child_process');
 
+const fs = require('fs');
+const puppeteer = require('puppeteer');
+
 // Subscan API URLs
 const SUBSCAN_API_URLS = {
     polkadot: 'https://polkadot.api.subscan.io/api/v2/scan/account/reward_slash',
@@ -99,6 +102,69 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
     return rewards;
 }
 
+async function writeToPDF(rewards, tokenPrice, network, address, quarter, year) {
+    const decimals = network === 'polkadot' ? 10 : 12;
+
+    const rows = rewards.map((reward) => {
+        const amount = reward.amount / Math.pow(10, decimals);
+        return {
+            Date: new Date(reward.block_timestamp * 1000).toLocaleDateString(),
+            Era: reward.era,
+            Block_timestamp: reward.block_timestamp,
+            Event_index: reward.event_index,
+            Event_id: reward.event_index,
+            Extrinsic_index: reward.extrinsic_index,
+            Amount: amount,
+            EUR_Value: amount * tokenPrice
+        };
+    });
+
+    const totalAmount = rows.reduce((sum, row) => sum + row.Amount, 0);
+    const totalValue = totalAmount * tokenPrice;
+
+    rows.push({
+        Date: 'Total',
+        Era: '',
+        Block_timestamp: '',
+        Event_index: '',
+        Event_id: '',
+        Extrinsic_index: `€ ${tokenPrice} per token`,
+        Amount: totalAmount,
+        EUR_Value: totalValue
+    });
+
+    const headers = Object.keys(rows[0]);
+    const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: sans-serif; font-size: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #333; padding: 4px; word-break: break-word; text-align: left; }
+        th { background: #eee; }
+      </style>
+    </head>
+    <body>
+      <h2>Rewards - ${year} ${quarter} - ${network}-${address}</h2>
+      <table>
+        <thead><tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>
+          ${rows.map(row => `<tr>${headers.map(h => `<td>${row[h] ?? ''}</td>`).join('')}</tr>`).join('')}
+        </tbody>
+      </table>
+    </body>
+    </html>`;
+
+    const fileName = `${year}-${quarter}-${network}-${address}.pdf`;
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setContent(html);
+    await page.pdf({ path: fileName, format: 'A4', landscape: true });
+    await browser.close();
+
+    console.log(`PDF file created: ${fileName}`);
+}
+
 // Function to write staking rewards to an Excel file
 function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
     const decimals = network === 'polkadot' ? 10 : 12;
@@ -111,7 +177,7 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
         Event_id: reward.event_index,
         Extrinsic_index: reward.extrinsic_index,
         Amount: reward.amount / Math.pow(10, decimals),
-        EUR_Value: (reward.amount / Math.pow(10, decimals)) * tokenPrice
+        EUR_Value: ((reward.amount / Math.pow(10, decimals)) * tokenPrice).toFixed(4)
     }));
 
     const totalRewards = worksheetData.reduce((acc, row) => acc + row.Amount, 0);
@@ -120,8 +186,8 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
     worksheetData.push({
         Date: 'Total',
         Extrinsic_index: `€ ${tokenPrice} per token`,
-        Amount: totalRewards,
-        EUR_Value: totalEurValue
+        Amount: (totalRewards).toFixed(4),
+        EUR_Value: (totalEurValue).toFixed(4)
     });
 
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
@@ -228,7 +294,19 @@ program
             return;
         }
 
-        writeToExcel(rewards, price, network, address, quarter, year);
+        const exportFormat = await select({
+            message: 'Select export format',
+            choices: [
+                { name: 'Excel (.xlsx)', value: 'xlsx' },
+                { name: 'PDF (.pdf)', value: 'pdf' }
+            ]
+        });
+
+        if (exportFormat === 'xlsx') {
+            writeToExcel(rewards, price, network, address, quarter, year);
+        } else {
+            await writeToPDF(rewards, price, network, address, quarter, year);
+        }
     } catch (error) {
         console.error('Error fetching staking rewards:', error.response?.data || error.message);
     }
