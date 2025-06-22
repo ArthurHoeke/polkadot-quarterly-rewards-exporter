@@ -177,7 +177,7 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
         Event_id: reward.event_index,
         Extrinsic_index: reward.extrinsic_index,
         Amount: reward.amount / Math.pow(10, decimals),
-        EUR_Value: ((reward.amount / Math.pow(10, decimals)) * tokenPrice).toFixed(4)
+        EUR_Value: (reward.amount / Math.pow(10, decimals)) * tokenPrice
     }));
 
     const totalRewards = worksheetData.reduce((acc, row) => acc + row.Amount, 0);
@@ -186,8 +186,8 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
     worksheetData.push({
         Date: 'Total',
         Extrinsic_index: `€ ${tokenPrice} per token`,
-        Amount: (totalRewards).toFixed(4),
-        EUR_Value: (totalEurValue).toFixed(4)
+        Amount: totalRewards,
+        EUR_Value: totalEurValue
     });
 
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
