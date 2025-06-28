@@ -122,14 +122,16 @@ async function writeToPDF(rewards, tokenPrice, network, address, quarter, year) 
     const totalAmount = rows.reduce((sum, row) => sum + row.Amount, 0);
     const totalValue = totalAmount * tokenPrice;
 
+    const tokenTicker = network === 'polkadot' ? 'DOT' : 'KSM';
+
     rows.push({
         Date: 'Total',
         Era: '',
         Block_timestamp: '',
         Event_index: '',
         Event_id: '',
-        Extrinsic_index: `€ ${tokenPrice} per token`,
-        Amount: totalAmount,
+        Extrinsic_index: `€ ${tokenPrice} per ${tokenTicker}`,
+        Amount: totalAmount + " " + tokenTicker,
         EUR_Value: totalValue
     });
 
