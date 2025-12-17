@@ -7,13 +7,17 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 
-// Subscan API URLs
 const SUBSCAN_API_URLS = {
-    polkadot: 'https://polkadot.api.subscan.io/api/v2/scan/account/reward_slash',
-    kusama: 'https://kusama.api.subscan.io/api/v2/scan/account/reward_slash',
+    polkadot: {
+        legacy: 'https://polkadot.api.subscan.io/api/v2/scan/account/reward_slash',
+        assetHub: 'https://assethub-polkadot.api.subscan.io/api/scan/account/reward_slash'
+    },
+    kusama: {
+        legacy: 'https://kusama.api.subscan.io/api/v2/scan/account/reward_slash',
+        assetHub: 'https://assethub-kusama.api.subscan.io/api/scan/account/reward_slash'
+    },
 };
 
-// Function to map quarter to months
 const quarterToMonths = (year, quarter) => {
     switch (quarter) {
         case 'Q1':
@@ -29,21 +33,19 @@ const quarterToMonths = (year, quarter) => {
     }
 };
 
-// Helper function to introduce a delay
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Function to fetch staking rewards from Subscan API with pagination and delays
 async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
     let rewards = [];
     let page = 0;
-    const startTimestamp = new Date(startDate).getTime() / 1000; // Convert to Unix timestamp
+    const startTimestamp = new Date(startDate).getTime() / 1000;
     const endTimestamp = new Date(endDate).getTime() / 1000;
     let hasMoreData = true;
     let retryCount = 0;
 
     while (hasMoreData) {
         try {
-            console.log(`Fetching rewards from page ${page + 1}...`);
+            console.log(`Fetching rewards from ${apiUrl} page ${page + 1}...`);
 
             const response = await axios.post(
                 apiUrl,
@@ -56,8 +58,7 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
                 },
                 {
                     headers: {
-                        'Content-Type': 'application/json',
-                        //'X-API-Key': 'your-subscan-api-key-here' // Add your Subscan API key
+                        'Content-Type': 'application/json'
                     }
                 }
             );
@@ -65,7 +66,6 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
             const rewardList = response.data.data.list || [];
 
             if (rewardList.length === 0) {
-                console.log('No more rewards found.');
                 break;
             }
 
@@ -77,24 +77,22 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
 
             const oldestReward = rewardList[rewardList.length - 1];
             if (oldestReward.block_timestamp < startTimestamp) {
-                hasMoreData = false; // Stop if the last reward is beyond the desired date range
+                hasMoreData = false;
             } else {
-                page++; // Fetch the next page
+                page++;
             }
 
-            // Delay between requests (1 second)
             await delay(1000);
-            retryCount = 0; // Reset retry count on successful request
+            retryCount = 0;
         } catch (error) {
             if (error.response?.data?.code === 20008) {
-                // Handle rate limit exceeded
                 retryCount++;
-                const waitTime = 2 ** retryCount * 1000; // Exponential backoff
+                const waitTime = 2 ** retryCount * 1000;
                 console.log(`API rate limit exceeded. Retrying in ${waitTime / 1000} seconds...`);
                 await delay(waitTime);
             } else {
                 console.error('Error fetching staking rewards:', error.response?.data || error.message);
-                throw error; // Exit loop on non-rate limit errors
+                throw error;
             }
         }
     }
@@ -102,14 +100,15 @@ async function fetchStakingRewards(address, startDate, endDate, apiUrl) {
     return rewards;
 }
 
-async function writeToPDF(rewards, tokenPrice, network, address, quarter, year) {
+async function writeToPDF(rewards, tokenPrice, network, address, quarter, year, useBlockNum) {
     const decimals = network === 'polkadot' ? 10 : 12;
+    const eraOrBlockLabel = useBlockNum ? 'Block_number' : 'Era';
 
     const rows = rewards.map((reward) => {
         const amount = reward.amount / Math.pow(10, decimals);
-        return {
+        const row = {
             Date: new Date(reward.block_timestamp * 1000).toLocaleDateString(),
-            Era: reward.era,
+            [eraOrBlockLabel]: useBlockNum ? reward.block_num : reward.era,
             Block_timestamp: reward.block_timestamp,
             Event_index: reward.event_index,
             Event_id: reward.event_index,
@@ -117,16 +116,16 @@ async function writeToPDF(rewards, tokenPrice, network, address, quarter, year) 
             Amount: amount,
             EUR_Value: amount * tokenPrice
         };
+        return row;
     });
 
     const totalAmount = rows.reduce((sum, row) => sum + row.Amount, 0);
     const totalValue = totalAmount * tokenPrice;
-
     const tokenTicker = network === 'polkadot' ? 'DOT' : 'KSM';
 
     rows.push({
         Date: 'Total',
-        Era: '',
+        [eraOrBlockLabel]: '',
         Block_timestamp: '',
         Event_index: '',
         Event_id: '',
@@ -167,13 +166,13 @@ async function writeToPDF(rewards, tokenPrice, network, address, quarter, year) 
     console.log(`PDF file created: ${fileName}`);
 }
 
-// Function to write staking rewards to an Excel file
-function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
+function writeToExcel(rewards, tokenPrice, network, address, quarter, year, useBlockNum) {
     const decimals = network === 'polkadot' ? 10 : 12;
+    const eraOrBlockLabel = useBlockNum ? 'Block_number' : 'Era';
 
     const worksheetData = rewards.map((reward) => ({
         Date: new Date(reward.block_timestamp * 1000).toLocaleDateString(),
-        Era: reward.era,
+        [eraOrBlockLabel]: useBlockNum ? reward.block_num : reward.era,
         Block_timestamp: reward.block_timestamp,
         Event_index: reward.event_index,
         Event_id: reward.event_index,
@@ -187,21 +186,18 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
 
     worksheetData.push({
         Date: 'Total',
+        [eraOrBlockLabel]: '',
         Extrinsic_index: `€ ${tokenPrice} per token`,
         Amount: totalRewards,
         EUR_Value: totalEurValue
     });
 
     const worksheet = XLSX.utils.json_to_sheet(worksheetData);
-
-    // Auto-fit column widths
     const columnWidths = Object.keys(worksheetData[0]).map((key) => {
         const maxLength = Math.max(...worksheetData.map(row => String(row[key] || '').length), key.length);
         return { wch: maxLength + 2 };
     });
     worksheet['!cols'] = columnWidths;
-
-    // Set landscape orientation (LibreOffice/Excel will respect this)
     worksheet['!pageSetup'] = { orientation: 'landscape' };
 
     const workbook = XLSX.utils.book_new();
@@ -211,7 +207,6 @@ function writeToExcel(rewards, tokenPrice, network, address, quarter, year) {
     console.log(`Excel file created: ${year}-${quarter}-${network}-${address}.xlsx`);
 }
 
-// Function to fetch token price from CoinGecko API
 async function fetchTokenPrice(network) {
     const tokenId = network === 'polkadot' ? 'polkadot' : 'kusama';
     const url = `https://api.coingecko.com/api/v3/simple/price?ids=${tokenId}&vs_currencies=eur`;
@@ -225,7 +220,6 @@ async function fetchTokenPrice(network) {
     }
 }
 
-// CLI setup
 const program = new Command();
 program
     .option('-n, --network <network>', 'Network (polkadot or kusama)')
@@ -246,10 +240,11 @@ program
         ]
     });
 
-    const year = options.year || await input({
+    const yearInput = options.year || await input({
         message: 'Enter the year',
         validate: input => /^\d{4}$/.test(input) || 'Please enter a valid year'
     });
+    const year = parseInt(yearInput);
 
     const quarter = options.quarter || await select({
         message: 'Select the quarter',
@@ -286,15 +281,31 @@ program
         price = parseFloat(price);
     }
 
-    console.log(`Fetching staking rewards for ${address} on ${network} from ${startDate} to ${endDate}...`);
+    const isPastQ42025 = year > 2025;
+    const useBlockNum = isPastQ42025;
+
+    console.log(`Fetching rewards for ${address} on ${network}. Mode: ${useBlockNum ? 'Asset Hub Only' : 'Legacy + Asset Hub'}`);
 
     try {
-        const apiUrl = SUBSCAN_API_URLS[network];
-        const rewards = await fetchStakingRewards(address, startDate, endDate, apiUrl);
-        if (rewards.length === 0) {
+        const endpoints = SUBSCAN_API_URLS[network];
+        let targetUrls = [endpoints.assetHub];
+        
+        if (!isPastQ42025) {
+            targetUrls.push(endpoints.legacy);
+        }
+
+        let allRewards = [];
+        for (const url of targetUrls) {
+            const rewards = await fetchStakingRewards(address, startDate, endDate, url);
+            allRewards = allRewards.concat(rewards);
+        }
+
+        if (allRewards.length === 0) {
             console.log('No rewards found for the given period.');
             return;
         }
+
+        allRewards.sort((a, b) => b.block_timestamp - a.block_timestamp);
 
         const exportFormat = await select({
             message: 'Select export format',
@@ -305,12 +316,11 @@ program
         });
 
         if (exportFormat === 'xlsx') {
-            writeToExcel(rewards, price, network, address, quarter, year);
+            writeToExcel(allRewards, price, network, address, quarter, year, useBlockNum);
         } else {
-            await writeToPDF(rewards, price, network, address, quarter, year);
+            await writeToPDF(allRewards, price, network, address, quarter, year, useBlockNum);
         }
     } catch (error) {
-        console.error('Error fetching staking rewards:', error.response?.data || error.message);
+        console.error('Error processing rewards:', error.message);
     }
 })();
-
